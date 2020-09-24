@@ -11,16 +11,15 @@
 #
 # https://github.com/fsavje/math-with-slack
 #
-# MIT License, Copyright 2017-2019 Fredrik Savje
-#
+# MIT License
+# Copyright 2017-2019 Fredrik Savje
+# Copyright 2020-2021 Cambridge Yang
+
 ################################################################################
 
 # Python 2.7 and 3
 
 from __future__ import print_function
-
-
-# Load modules
 
 import argparse
 import json
@@ -30,160 +29,525 @@ import shutil
 import struct
 import sys
 import time
-from distutils.version import LooseVersion
+import logging
+import distutils.version
+import collections
+import operator
+import functools
+import sys
+import os
+import stat
+import math
+import tarfile
+import tempfile
 
 try:
-    # Python 3
-    import urllib.request as urllib_request
+  import urllib.request as urllib_request  # Python 3
 except:
-    # Python 2
-    import urllib as urllib_request
+  import urllib as urllib_request  # Python 2
+
 # ssl is added for Windows and possibly Mac to avoid ssl
 # certificate_verify_failed error
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 
-import tarfile
-import tempfile
-
+LooseVersion = distutils.version.LooseVersion
 
 # Math with Slack version
 
 mws_version = '0.4.1.1'
 
 
-# Parse command line options
+class AsarArchive:
+  """Represents a single *.asar file."""
+  LOGGER = logging.getLogger("AsarArchive")
 
-parser = argparse.ArgumentParser(prog='math-with-slack', description='Inject Slack with MathJax.')
-parser.add_argument('-a', '--app-file', help='Path to Slack\'s \'app.asar\' file.')
-parser.add_argument('--mathjax-url', 
-                    help='Url to download mathjax release.', 
-                    default='https://registry.npmjs.org/mathjax/-/mathjax-3.1.0.tgz')
-parser.add_argument('--mathjax-tex-options', 
-                    type=str,
-                    help='Path to file with TeX input processor options (See http://docs.mathjax.org/en/latest/options/input/tex.html).', 
-                    default='default')
-parser.add_argument('-u', '--uninstall', action='store_true', help='Removes injected MathJax code.')
-parser.add_argument('--version', action='version', version='%(prog)s ' + mws_version)
-args = parser.parse_args()
+  def __init__(self, filename, asarfile, files, baseoffset):
+    """Initializes a new instance of the :see AsarArchive class.
+
+    Args:
+        filename (str):
+            The path to the *.asar file to read/write from/to.
+        asarfile (File):
+            An open *.asar file object.
+        files (dict):
+            Dictionary of files contained in the archive.
+            (The header that was read from the file).
+        baseoffset (int):
+            Base offset, indicates where in the file the header ends.
+    """
+    self.filename = filename
+    self.asarfile = asarfile
+    self.files = files
+    self.baseoffset = baseoffset
+
+  def extract(self, destination):
+    """Extracts the contents of the archive to the specifed directory.
+
+    Args:
+        destination (str):
+            Path to an empty directory to extract the files to.
+    """
+
+    if os.path.exists(destination):
+      raise OSError(20, 'Destination exists', destination)
+
+    self.__extract_directory('.', self.files['files'], destination)
+
+  def __extract_directory(self, path, files, destination):
+    """Extracts a single directory to the specified directory on disk.
+
+    Args:
+        path (str):
+            Relative (to the root of the archive) path of the directory
+            to extract.
+        files (dict):
+            A dictionary of files from a *.asar file header.
+        destination (str):
+            The path to extract the files to.
+    """
+
+    # assures the destination directory exists
+    destination_path = os.path.join(destination, path)
+    if not os.path.exists(destination_path):
+      os.makedirs(destination_path)
+    for name, contents in files.items():
+      item_path = os.path.join(path, name)
+
+      # objects that have a 'files' member are directories,
+      # recurse into them
+      if 'files' in contents:
+        self.__extract_directory(item_path, contents['files'], destination)
+
+        continue
+
+      self.__extract_file(item_path, contents, destination)
+
+  @staticmethod
+  def __is_unpacked(fileinfo):
+    return fileinfo.get('unpacked', False)
+
+  def __extract_file(self, path, fileinfo, destination):
+    """Extracts the specified file to the specified destination.
+
+    Args:
+        path (str):
+            Relative (to the root of the archive) path of the
+            file to extract.
+        fileinfo (dict):
+            Dictionary containing the offset and size of the file
+            (Extracted from the header).
+        destination (str):
+            Directory to extract the archive to.
+    """
+    if self.__is_unpacked(fileinfo):
+      self.__copy_unpacked(path, destination)
+      return
+
+    self.asarfile.seek(self.__absolute_offset(fileinfo['offset']))
+
+    # TODO: read in chunks, ain't going to read multiple GB's in memory
+    contents = self.asarfile.read(fileinfo['size'])
+
+    destination_path = os.path.join(destination, path)
+
+    with open(destination_path, 'wb') as fp:
+      fp.write(contents)
+
+    if sys.platform != 'win32' and fileinfo.get('executable', False):
+      os.chmod(destination_path,
+               os.stat(destination_path).st_mode | stat.S_IEXEC)
+
+    self.LOGGER.debug('Extracted %s to %s', path, destination_path)
+
+  def __copy_unpacked(self, path, destination):
+    """Copies a file that was already extracted to the destination directory.
+
+    Args:
+        path (str):
+            Relative (to the root of the archive) of the file to copy.
+        destination (str):
+            Directory to extract the archive to.
+    """
+
+    unpacked_dir = self.filename + '.unpacked'
+    if not os.path.isdir(unpacked_dir):
+      self.LOGGER.warn('Failed to copy extracted file %s, no extracted dir',
+                       path)
+
+      return
+
+    source_path = os.path.join(unpacked_dir, path)
+
+    if not os.path.exists(source_path):
+      self.LOGGER.warn('Failed to copy extracted file %s, does not exist', path)
+
+      return
+
+    destination_path = os.path.join(destination, path)
+    shutil.copyfile(source_path, destination_path, follow_symlinks=True)
+
+  def __absolute_offset(self, offset):
+    """Converts the specified relative offset into an absolute offset.
+    
+    Offsets specified in the header are relative to the end of the header.
+    Args:
+        offset (int):
+            The relative offset to convert to an absolute offset.
+    Returns (int):
+        The specified relative offset as an absolute offset.
+    """
+
+    return int(offset) + self.baseoffset
+
+  def get_unpackeds(self):
+    """Gets all the unpacked files."""
+    for path, fileinfo in self.__walk_fileinfos(self.files, root="."):
+      if self.__is_unpacked(fileinfo):
+        yield os.path.relpath(path, ".")
+
+  def __enter__(self):
+    """When the `with` statements opens."""
+
+    return self
+
+  def __exit__(self, type, value, traceback):
+    """When the `with` statement ends."""
+
+    if not self.asarfile:
+      return
+
+    self.asarfile.close()
+    self.asarfile = None
+
+  @staticmethod
+  def __roundup(val, divisor):
+    return math.ceil((float(val) / divisor)) * divisor
+
+  @classmethod
+  def open(cls, filename):
+    """Opens a *.asar file and constructs a new :see AsarArchive instance.
+    
+    Args:
+        filename (str):
+            Path to the *.asar file to open for reading.
+    Returns (AsarArchive):
+        An insance of of the :AsarArchive class or None if reading failed.
+    """
+
+    asarfile = open(filename, 'rb')
+
+    (header_data_size, json_binary_size, json_data_size,
+     json_string_size) = struct.unpack('<4I', asarfile.read(16))
+    assert header_data_size == 4
+    assert json_binary_size == json_data_size + 4
+    json_header_bytes = asarfile.read(json_string_size).decode('utf-8')
+    files = json.loads(json_header_bytes)
+    baseoffset = AsarArchive.__roundup(16 + json_string_size, 4)
+    return cls(filename, asarfile, files, baseoffset)
+
+  @staticmethod
+  def __dir_to_fileinfos(directory, unpackeds=tuple()):
+    fileinfos = {'.': {'files': {}}}
+    offset = 0
+    for root, subdirs, files in os.walk(directory, topdown=True):
+      parts = os.path.normpath(os.path.relpath(root,
+                                               directory)).split(os.path.sep)
+      if root != directory:
+        parts = ['.'] + parts
+      dirinfo = functools.reduce(lambda dirinfo, part: dirinfo[part]['files'],
+                                 parts, fileinfos)
+      for file in files:
+        file_path = os.path.join(root, file)
+        file_size = os.path.getsize(file_path)
+        if os.path.relpath(file_path, directory) in unpackeds:
+          fileinfo = {'size': file_size, 'unpacked': True}
+        else:
+          fileinfo = {'size': file_size, 'offset': str(offset)}
+          offset += file_size
+        if sys.platform != 'win32' and (os.stat(file_path).st_mode & 0o100):
+          fileinfo['executable'] = True
+        dirinfo[file] = fileinfo
+
+      for subdir in subdirs:
+        dirinfo[subdir] = {'files': {}}
+
+    return fileinfos['.']
+
+  @staticmethod
+  def __walk_fileinfos(fileinfos, root="."):
+    for name, fileinfo in fileinfos["files"].items():
+      sub_path = os.path.join(root, name)
+      if 'files' in fileinfo:
+        # is directory
+        for v in AsarArchive.__walk_fileinfos(fileinfo, root=sub_path):
+          yield v
+      else:
+        yield sub_path, fileinfo
+
+  @staticmethod
+  def pack(directory, out_asarfile, unpackeds=tuple()):
+    fileinfos = AsarArchive.__dir_to_fileinfos(directory, unpackeds=unpackeds)
+    json_header = json.dumps(fileinfos, sort_keys=True, separators=(',', ':'))
+    json_header_bytes = json_header.encode('utf-8')
+    header_string_size = len(json_header_bytes)
+    data_size = 4
+    aligned_size = AsarArchive.__roundup(header_string_size, data_size)
+    header_size = aligned_size + 8
+    header_object_size = aligned_size + data_size
+    out_asarfile.seek(0)
+    out_asarfile.write(
+        struct.pack('<4I', data_size, header_size, header_object_size,
+                    header_string_size))
+    out_asarfile.write(json_header_bytes + b'\0' *
+                       (aligned_size - header_string_size))
+    baseoffset = AsarArchive.__roundup(header_string_size + 16, 4)
+    for path, fileinfo in AsarArchive.__walk_fileinfos(fileinfos):
+      if AsarArchive.__is_unpacked(fileinfo):
+        continue
+      with open(os.path.join(directory, path), 'rb') as fp:
+        out_asarfile.seek(int(fileinfo['offset']) + baseoffset)
+        out_asarfile.write(fp.read())
 
 
-# Misc functions
+def parse_args():
+
+  Parser = gooey.GooeyParser if USE_GUI else argparse.ArgumentParser
+
+  def add_argument(*args, **kwargs):
+    if not USE_GUI:
+      kwargs.pop('widget', None)
+    return parser.add_argument(*args, **kwargs)
+
+  parser = Parser(prog='math-with-slack',
+                  description='Inject Slack with MathJax.')
+  if USE_GUI:
+    # choose_slack_group = parser.add_argument_group("Choose Slack App")
+    group = parser.add_mutually_exclusive_group(
+        required=True, gooey_options={'initial_selection': 0})
+    search_paths = get_search_path_by_platform(sys.platform)
+    candidate_files = find_candidate_files(search_paths, "app.asar")
+    group.add_argument(
+        '--app-file-from-auto-search',
+        help="Path to Slack's 'app.asar' file detected automatically.",
+        choices=candidate_files,
+        default=candidate_files[0])
+    group.add_argument('--app-file',
+                       help="Manually provide path to Slack's 'app.asar' file.",
+                       widget='FileChooser')
+  else:
+    parser.add_argument('-a',
+                        '--app-file',
+                        help="Path to Slack's 'app.asar' file.")
+
+  add_argument('--mathjax-url',
+               help='Url to download mathjax release.',
+               default='https://registry.npmjs.org/mathjax/-/mathjax-3.1.0.tgz')
+  add_argument(
+      '--mathjax-tex-options',
+      type=str,
+      help='String of TeX input processor options '
+      '(See http://docs.mathjax.org/en/latest/options/input/tex.html).',
+      default='default\n11',
+      widget="Textarea")
+  add_argument('-u',
+               '--uninstall',
+               action='store_true',
+               help='Removes injected MathJax code.')
+  if not USE_GUI:
+    add_argument('--version',
+                 action='version',
+                 version='%(prog)s ' + mws_version)
+  return parser.parse_args()
+
+
+USE_GUI = sys.argv[1] == "gui" or '--ignore-gooey' in sys.argv
+if USE_GUI:
+  import gooey
+  if sys.argv[1] == "gui":
+    del sys.argv[1]
+  parse_args = gooey.Gooey(
+      default_size=(610, 700),
+      optional_cols=1,
+      menu=[{
+          'name':
+              'math-with-slack',
+          'items': [{
+              'type': 'AboutDialog',
+              'menuTitle': 'About',
+              'name': 'math-with-slack',
+              'description': 'Injects MathJax to Slack, GUI powered by Gooey.',
+              'version': mws_version,
+              'license': 'MIT'
+          }]
+      }],
+      progress_regex=r"Downloading MathJax...(\d+)%")(parse_args)
+else:
+  parse_args = parse_args
+
 
 def exprint(*args, **kwargs):
-    print(*args, file=sys.stderr, **kwargs)
-    sys.exit(1)
+  print(*args, file=sys.stderr, **kwargs)
+  sys.exit(1)
 
-# Find path to app.asar
+
+default_search_paths_by_platforms = {
+    'darwin': ['/Applications/Slack.app/Contents/Resources/'],
+    'linux': [
+        '/usr/lib/slack/resources/',
+        '/usr/local/lib/slack/resources/',
+        '/opt/slack/resources/',
+        '/mnt/c/Users/*/AppData/Local/slack/*/resources/',
+    ],
+    'win32': ['c:/Users/*/AppData/Local/slack/*/resources/']
+}
+
+
+def get_search_path_by_platform(
+    os, search_paths_lookup=default_search_paths_by_platforms):
+  platform = sys.platform
+  if platform.startswith('linux'):
+    platform = 'linux'
+  return search_paths_lookup[platform]
+
 
 def find_candidate_files(path_globs, filename):
-    candidates = []
-    for path_glob in path_globs:
-        candidates += glob.glob(os.path.join(path_glob, filename))
-    candidates =[c for c in candidates if os.path.isfile(c)]
-    candidates = sorted(candidates, key=lambda c: os.path.getctime(c), reverse=True)
-    return candidates
+  candidates = []
+  for path_glob in path_globs:
+    candidates += glob.glob(os.path.join(path_glob, filename))
+  candidates = [c for c in candidates if os.path.isfile(c)]
+  candidates = sorted(candidates,
+                      key=lambda c: os.path.getctime(c),
+                      reverse=True)
+  return candidates
+
 
 def display_choose_from_menu(candidates, header="", prompt=""):
-    print(header)
-    for i, candidate in enumerate(candidates):
-        if i == 0:
-            candidate += " <== (default)"
-        print("{}) {}".format(i, candidate))
-    choice = input(prompt).lower()
-    choice = "".join(choice.split()) # remote whitespace
-    choice = choice.strip(")") # remove trailing ')'
-    try:
-        if choice in ("", "y", "yes"):
-            choice = 0
-        else:
-            choice = int(choice)
-        return candidates[choice]
-    except:
-        exprint("Invalid choice. Please restart script.")
-
-if args.app_file is not None:
-    app_path = args.app_file
-    if not os.path.isfile(app_path):
-        exprint('Cannot find Slack at ' + app_path)
-else:
-    path_lookups = {
-        'darwin': ['/Applications/Slack.app/Contents/Resources/'],
-        'linux': [
-            '/usr/lib/slack/resources/', 
-            '/usr/local/lib/slack/resources/',
-            '/opt/slack/resources/',
-            '/mnt/c/Users/*/AppData/Local/slack/*/resources/'
-        ],
-        'win32': [
-            'c:/Users/*/AppData/Local/slack/*/resources/'
-        ]
-    }
-    platform = sys.platform
-    if platform.startswith('linux'):
-        platform = 'linux'
-    search_paths = path_lookups[platform]
-    candidate_app_asars = find_candidate_files(search_paths, filename='app.asar')
-    if len(candidate_app_asars) == 0:
-        exprint(("Could not find Slack's app.asar file under {}. "
-                 "Please manually provide path (see --help)").format(search_paths))
-    if len(candidate_app_asars) == 1:
-        app_path = candidate_app_asars[0]
-    else: 
-        app_path = display_choose_from_menu(candidate_app_asars, 
-            header="Several versions of Slack are installed.", 
-            prompt="Choose from above:")
+  print(header)
+  for i, candidate in enumerate(candidates):
+    if i == 0:
+      candidate += " <== (default)"
+    print("{}) {}".format(i, candidate))
+  choice = input(prompt).lower()
+  choice = "".join(choice.split())  # remote whitespace
+  choice = choice.strip(")")  # remove trailing ')'
+  try:
+    if choice in ("", "y", "yes"):
+      choice = 0
+    else:
+      choice = int(choice)
+    return candidates[choice]
+  except:
+    exprint("Invalid choice. Please restart script.")
 
 
-# Print info
+def find_app_in_search_paths_cmd(search_paths):
+  candidate_app_asars = find_candidate_files(search_paths, filename='app.asar')
+  if len(candidate_app_asars) == 0:
+    exprint(("Could not find Slack's app.asar file under {}. "
+             "Please manually provide path (see --help)").format(search_paths))
+  if len(candidate_app_asars) == 1:
+    app_path = candidate_app_asars[0]
+  else:
+    app_path = display_choose_from_menu(
+        candidate_app_asars,
+        header="Several versions of Slack are installed.",
+        prompt="Choose from above:")
 
-print('Using Slack installation at: ' + app_path)
+  return app_path
 
 
-# Remove previously injected code if it exists
+def extract_slack_asar(tmpdir, app_path):
+  slack_asar_extracted_dir = os.path.join(tmpdir, "slack.extracted")
+  with AsarArchive.open(app_path) as slack_asar:
+    slack_asar.extract(slack_asar_extracted_dir)
+    unpackeds = set(slack_asar.get_unpackeds())
+  return slack_asar_extracted_dir, unpackeds
 
-with open(app_path, mode='rb') as check_app_fp:
-    (header_data_size, json_binary_size) = struct.unpack('<II', check_app_fp.read(8))
-    assert header_data_size == 4
-    json_binary = check_app_fp.read(json_binary_size)
 
-(json_data_size, json_string_size) = struct.unpack('<II', json_binary[:8])
-assert json_binary_size == json_data_size + 4
-json_check = json.loads(json_binary[8:(json_string_size + 8)].decode('utf-8'))
-
-app_backup_path = app_path + '.mwsbak'
-
-if 'MWSINJECT' in json_check['files']:
+def recover_from_backup(slack_asar_extracted_dir, app_path, app_backup_path):
+  if os.path.isfile(os.path.join(slack_asar_extracted_dir, "MWSINJECT")):
     if not os.path.isfile(app_backup_path):
-        exprint('Found injected code without backup. Please re-install Slack.')
+      exprint('Found injected code without backup. Please re-install Slack.')
     try:
-        os.remove(app_path)
-        shutil.move(app_backup_path, app_path)
+      os.remove(app_path)
+      shutil.move(app_backup_path, app_path)
     except Exception as e:
-        print(e)
-        exprint('Cannot remove previously injected code. Make sure the script has write permissions.')
+      print(e)
+      exprint('Cannot remove previously injected code. '
+              'Make sure the script has write permissions.')
 
 
-# Remove old backup if it exists
-
-if os.path.isfile(app_backup_path):
+def remove_backup(app_backup_path):
+  if os.path.isfile(app_backup_path):
     try:
-        os.remove(app_backup_path)
+      os.remove(app_backup_path)
     except Exception as e:
-        print(e)
-        exprint('Cannot remove old backup. Make sure the script has write permissions.')
+      print(e)
+      exprint('Cannot remove old backup. '
+              'Make sure the script has write permissions.')
 
 
-# Are we uninstalling?
+def make_backup(app_path, app_backup_path):
+  try:
+    shutil.copy(app_path, app_backup_path)
+  except Exception as e:
+    print(e)
+    exprint('Cannot make backup. Make sure the script has write permissions.')
 
-if args.uninstall:
-    print('Uninstall successful. Please restart Slack.')
-    sys.exit(0)
+
+def read_slack_version(slack_asar_extracted_dir):
+  print(slack_asar_extracted_dir)
+  with open(os.path.join(slack_asar_extracted_dir, "package.json"), "r") as fp:
+    return LooseVersion(json.load(fp)['version'])
 
 
-### Inject code
+def download_mathjax(tmpdir, mathjax_url):
+  """Download MathJax. 
+  Currently assumes downloaded file is a tar called package.tar.
+  """
 
-# Code to be injected
+  def get_reporthook():
+
+    class report:
+      start_time = None
+      progress_size = None
+
+    def reporthook(count, block_size, total_size):
+      if count == 0:
+        report.progress_size = 0
+        report.start_time = time.time(
+        ) - 1e-6  # also offset a bit so we don't run into divide by zero.
+        return
+      duration = time.time() - report.start_time
+      report.progress_size += block_size
+      if report.progress_size >= total_size:
+        report.progress_size = total_size
+      try:
+        speed = report.progress_size / (1024 * duration)
+        percent = int(report.progress_size * 100 / total_size)
+      except ZeroDivisionError:
+        speed, percent = 0, 0
+      sys.stdout.write(
+          "\rDownloading MathJax...{:3d}%, {:3.1f} MB / {:3.1f} MB,"
+          " {:6.1f} KB/s, {:3.1f} sec".format(
+              percent, report.progress_size / (1024 * 1024),
+              total_size / (1024 * 1024), speed, duration))
+      if report.progress_size >= total_size:
+        sys.stdout.write("\n")
+      sys.stdout.flush()
+
+    return reporthook
+
+  mathjax_tar_name, _ = urllib_request.urlretrieve(mathjax_url, [],
+                                                   get_reporthook())
+  mathjax_tmp_dir = os.path.join(tmpdir, "mathjax")
+  mathjax_tar = tarfile.open(mathjax_tar_name)
+  mathjax_tar.extractall(path=mathjax_tmp_dir)
+  mathjax_tar.close()
+  mathjax_dir = os.path.join(mathjax_tmp_dir, "package")
+  return mathjax_dir
+
 
 inject_code = ('\n\n// math-with-slack ' + mws_version + '''
 // Inject MathJax 3.
@@ -268,201 +632,86 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 ''').encode('utf-8')
 
-if args.mathjax_tex_options == "default": 
-    args.mathjax_tex_options = """{
-      packages: {'[+]': ['noerrors', 'noundefined']},
-      inlineMath: [['$', '$']],
-      displayMath: [['$$', '$$']],
-    }"""
-inject_code = inject_code.replace(b"$MATHJAX_TEX_OPTIONS$", 
-    args.mathjax_tex_options.encode('utf-8'))
 
-# Make backup
-
-try:
-    shutil.copy(app_path, app_backup_path)
-except Exception as e:
-    print(e)
-    exprint('Cannot make backup. Make sure the script has write permissions.')
-
-
-# Get file info
-
-with open(app_backup_path, mode='rb') as ori_app_fp:
-    (header_data_size, json_binary_size) = struct.unpack('<II', ori_app_fp.read(8))
-    assert header_data_size == 4
-    json_binary = ori_app_fp.read(json_binary_size)
-    ori_data_offset = 8 + json_binary_size
-    ori_app_fp.seek(0, 2)
-    ori_data_size = ori_app_fp.tell() - ori_data_offset
-
-(json_data_size, json_string_size) = struct.unpack('<II', json_binary[:8])
-assert json_binary_size == json_data_size + 4
-json_header = json.loads(json_binary[8:(json_string_size + 8)].decode('utf-8'))
-assert 'MWSINJECT' not in json_header['files']
-
-def read_file_from_asar(file_offset, file_size):
-    with open(app_backup_path, mode='rb') as ori_app_fp:
-        ori_app_fp.seek(file_offset + ori_data_offset)
-        binary = ori_app_fp.read(file_size)
-        return binary
-
-def read_package_json():
-    package_json_desp = json_header['files']['package.json']
-    binary = read_file_from_asar(int(package_json_desp['offset']), int(package_json_desp['size']))
-    return json.loads(binary)
-
-def read_slack_version():
-    package_json = read_package_json()
-    return LooseVersion(package_json['version'])
-
-slack_version = read_slack_version()
-
-if LooseVersion('4.3') <= slack_version < LooseVersion('4.4'):
+def get_injected_file_path(slack_asar_extracted_dir):
+  slack_version = read_slack_version(slack_asar_extracted_dir)
+  if LooseVersion('4.3') <= slack_version < LooseVersion('4.4'):
     injected_file_name = 'main-preload-entry-point.bundle.js'
-    include_mathjax_inline = False
-elif LooseVersion('4.4') <= slack_version:
+  elif LooseVersion('4.4') <= slack_version:
     injected_file_name = 'preload.bundle.js'
-    include_mathjax_inline = True # We always use include mathjax inline now
-else:
+  else:
     exprint("Unsupported Slack Version {}.".format(slack_version))
-
-def split_path_to_components(path):
-    dirs = []
-    while True:
-        path, dir = os.path.split(path)
-        if dir != "":
-            dirs.append(dir)
-        else:
-            if path != "":
-                dirs.append(dir)
-            break
-    dirs.reverse()
-    if dirs == ['.']:
-        return dirs
-    else:
-        return ['.'] + dirs
-
-def dir_to_json_header(root_dir, initial_offset):
-    """Returns the json header for `root_dir`.
-    
-    Args:
-        - root_dir: the root_dir 
-        - initial_offset: a number that is added to all offset of files
-
-    Returns:
-        a tuple of (result, file_paths), where result is a dict containing
-        the json header, and file_paths is a list of file paths in order 
-        that should be appended to the end of the .asar file. 
-    """
-    file_paths = []
-    result = {"files": {}}
-    offset = initial_offset
-    for parent_abs, dirs, files in os.walk(root_dir):
-        parent = os.path.relpath(parent_abs, root_dir)
-        parent_components = split_path_to_components(parent)
-        rdict = result
-        for dir_component in parent_components[:-1]:
-            rdict = rdict["files"][dir_component]
-        rdict["files"][parent_components[-1]] = {"files": {}}
-        for file in files:
-            file_path = os.path.join(parent_abs, file)
-            file_paths.append(file_path)
-            size = os.path.getsize(file_path)
-            rdict["files"][parent_components[-1]]["files"][file] = {'size': size, 'offset': str(offset)}
-            offset += size
-    return result, file_paths
+  return os.path.join(slack_asar_extracted_dir, "dist", injected_file_name)
 
 
-ori_injected_file_size = json_header['files']['dist']['files'][injected_file_name]['size']
-ori_injected_file_offset = int(json_header['files']['dist']['files'][injected_file_name]['offset'])
+def run_injection(slack_asar_extracted_dir,
+                  mathjax_dir,
+                  mathjax_tex_options="default",
+                  inject_code=inject_code):
+  injected_file_path = get_injected_file_path(slack_asar_extracted_dir)
+  mathjax_src_path = os.path.join(mathjax_dir, "es5", "tex-svg-full.js")
+  with open(mathjax_src_path, "r+") as mathjax_src_file:
+    mathjax_src = mathjax_src_file.read().encode('utf-8')
+  inject_code = inject_code.replace(b"$MATHJAX_STUB$", mathjax_src)
 
-# Download MathJax, currently assumes downloaded file is a tar called package.tar
-def get_reporthook():
-    class report:
-        start_time = None
-        progress_size = None
-    def reporthook(count, block_size, total_size):
-        if count == 0:
-            report.progress_size = 0
-            report.start_time = time.time() - 1e-6 # also offset a bit so we don't run into divide by zero.
-            return
-        duration = time.time() - report.start_time
-        report.progress_size += block_size
-        if report.progress_size >= total_size:
-            report.progress_size = total_size
-        try:
-            speed = report.progress_size / (1024 * duration)
-            percent = int(report.progress_size * 100 / total_size)
-        except ZeroDivisionError:
-            speed, percent = 0, 0
-        sys.stdout.write("\rDownloading MathJax...{:3d}%, {:3.1f} MB / {:3.1f} MB, {:6.1f} KB/s, {:3.1f} sec".format(
-            percent, report.progress_size / (1024 * 1024), total_size / (1024 * 1024), speed, duration))
-        if report.progress_size >= total_size:
-            sys.stdout.write("\n")
-        sys.stdout.flush()
-    return reporthook
+  if mathjax_tex_options == "default":
+    mathjax_tex_options = """{
+        packages: {'[+]': ['noerrors', 'noundefined']},
+        inlineMath: [['$', '$']],
+        displayMath: [['$$', '$$']],
+      }"""
+  inject_code = inject_code.replace(b"$MATHJAX_TEX_OPTIONS$",
+                                    mathjax_tex_options.encode('utf-8'))
 
-mathjax_tar_name, headers = urllib_request.urlretrieve(args.mathjax_url,
-        [], get_reporthook())
-mathjax_tmp_dir = tempfile.mkdtemp()
-mathjax_tar = tarfile.open(mathjax_tar_name)
-mathjax_tar.extractall(path=mathjax_tmp_dir)
-mathjax_tar.close()
-mathjax_dir = os.path.join(mathjax_tmp_dir, "package")
-if include_mathjax_inline:
-    mathjax_src_path = os.path.join(mathjax_dir, "es5/tex-svg-full.js")
-    with open(mathjax_src_path, "r+") as mathjax_src_file:
-        mathjax_src = mathjax_src_file.read().encode('utf-8')
-    append_file_paths = []
-else:
-    mathjax_json_header, append_file_paths = dir_to_json_header(mathjax_dir, ori_data_size + ori_injected_file_size + len(inject_code))
-    json_header["files"]["node_modules"]["files"]["mathjax"] = mathjax_json_header["files"]["."]
-    mathjax_src = "require('mathjax/es5/startup.js');"
+  with open(injected_file_path, "wb+") as injected_file:
+    current_src = injected_file.read()
+    new_src = current_src + inject_code
+    injected_file.seek(0)
+    injected_file.write(new_src)
 
-inject_code = inject_code.replace(b"$MATHJAX_STUB$", mathjax_src)
 
-# Modify JSON data
+def run_injection_flow():
 
-json_header['files']['MWSINJECT'] = json_header['files']['LICENSE']
-json_header['files']['dist']['files'][injected_file_name]['size'] = ori_injected_file_size + len(inject_code)
-json_header['files']['dist']['files'][injected_file_name]['offset'] = str(ori_data_size)
+  args = parse_args()
 
-# Write new app.asar file
+  if args.app_file is not None:
+    app_path = args.app_file
+    if not os.path.isfile(app_path):
+      exprint('Cannot find Slack at ' + app_path)
+  else:
+    search_paths = get_search_path_by_platform(sys.platform)
+    app_path = find_app_in_search_paths_cmd(search_paths)
 
-new_json_header = json.dumps(json_header, separators=(',', ':')).encode('utf-8')
-new_json_header_padding = (4 - len(new_json_header) % 4) % 4
+  print('Using Slack installation at: {}'.format(app_path))
+  app_backup_path = app_path + '.mwsbak'
 
-with open(app_backup_path, mode='rb') as ori_app_fp, \
-     open(app_path, mode='wb') as new_app_fp:
-    # Header
-    new_app_fp.write(struct.pack('<I', 4))
-    new_app_fp.write(struct.pack('<I', 8 + len(new_json_header) + new_json_header_padding))
-    new_app_fp.write(struct.pack('<I', 4 + len(new_json_header) + new_json_header_padding))
-    new_app_fp.write(struct.pack('<I', len(new_json_header)))
-    new_app_fp.write(new_json_header)
-    new_app_fp.write(b'\0' * new_json_header_padding)
-    # Old data
-    ori_app_fp.seek(ori_data_offset)
-    shutil.copyfileobj(ori_app_fp, new_app_fp)
-    # Modified injected_file
-    ori_app_fp.seek(ori_data_offset + ori_injected_file_offset)
-    copy_until = ori_app_fp.tell() + ori_injected_file_size
-    while ori_app_fp.tell() < copy_until:
-        new_app_fp.write(ori_app_fp.read(min(65536, copy_until - ori_app_fp.tell())))
-    new_app_fp.write(inject_code)
-    # Append MathJax files in sequence
-    new_app_fp.seek(0, 2)
-    for append_file_path in append_file_paths:
-        with open(append_file_path, 'rb') as append_file:
-            new_app_fp.write(append_file.read())
+  tmpdir = tempfile.mkdtemp()
 
-# We are done
+  slack_asar_extracted_dir, unpackeds = extract_slack_asar(tmpdir, app_path)
+  recover_from_backup(slack_asar_extracted_dir, app_path, app_backup_path)
+  remove_backup(app_backup_path)
 
-shutil.rmtree(mathjax_tmp_dir)
-print('Install successful. Please restart Slack.')
-sys.exit(0)
+  if args.uninstall:
+    print('Uninstall successful. Please restart Slack.')
+    sys.exit(0)
 
+  make_backup(app_path, app_backup_path)
+
+  mathjax_dir = download_mathjax(tmpdir, args.mathjax_url)
+  run_injection(slack_asar_extracted_dir,
+                mathjax_dir,
+                mathjax_tex_options=args.mathjax_tex_options)
+
+  with open(app_path, "wb+") as f:
+    AsarArchive.pack(slack_asar_extracted_dir, f, unpackeds=unpackeds)
+
+  shutil.rmtree(tmpdir)
+  print('Install successful. Please restart Slack.')
+  sys.exit(0)
+
+
+if __name__ == "__main__":
+  run_injection_flow()
 
 # References
 
