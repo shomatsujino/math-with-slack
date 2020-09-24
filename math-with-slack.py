@@ -361,7 +361,8 @@ def parse_args():
   return parser.parse_args()
 
 
-USE_GUI = sys.argv[1] == "gui" or '--ignore-gooey' in sys.argv
+USE_GUI = (len(sys.argv) >= 2 and
+           sys.argv[1] == "gui") or '--ignore-gooey' in sys.argv
 if USE_GUI:
   import gooey
   if sys.argv[1] == "gui":
