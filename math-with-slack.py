@@ -348,7 +348,7 @@ def parse_args():
       type=str,
       help='String of TeX input processor options '
       '(See http://docs.mathjax.org/en/latest/options/input/tex.html).',
-      default='default\n11',
+      default='default',
       widget="Textarea")
   add_argument('-u',
                '--uninstall',
@@ -498,7 +498,6 @@ def make_backup(app_path, app_backup_path):
 
 
 def read_slack_version(slack_asar_extracted_dir):
-  print(slack_asar_extracted_dir)
   with open(os.path.join(slack_asar_extracted_dir, "package.json"), "r") as fp:
     return LooseVersion(json.load(fp)['version'])
 
@@ -649,6 +648,13 @@ def run_injection(slack_asar_extracted_dir,
                   mathjax_dir,
                   mathjax_tex_options="default",
                   inject_code=inject_code):
+  # Add marker
+  with open(os.path.join(slack_asar_extracted_dir, "MWSINJECT"),
+            "w+") as inject_marker:
+    inject_marker.write(
+        "Injected with math-with-slack Version {}\n".format(mws_version))
+
+  # Inject mathjax
   injected_file_path = get_injected_file_path(slack_asar_extracted_dir)
   mathjax_src_path = os.path.join(mathjax_dir, "es5", "tex-svg-full.js")
   with open(mathjax_src_path, "r+") as mathjax_src_file:
@@ -664,11 +670,8 @@ def run_injection(slack_asar_extracted_dir,
   inject_code = inject_code.replace(b"$MATHJAX_TEX_OPTIONS$",
                                     mathjax_tex_options.encode('utf-8'))
 
-  with open(injected_file_path, "wb+") as injected_file:
-    current_src = injected_file.read()
-    new_src = current_src + inject_code
-    injected_file.seek(0)
-    injected_file.write(new_src)
+  with open(injected_file_path, "ab") as injected_file:
+    injected_file.write(inject_code)
 
 
 def run_injection_flow():
