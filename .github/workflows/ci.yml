@@ -167,6 +167,7 @@ jobs:
         fi
         echo "::set-env name=BADGE_LOGO::${BADGE_LOGO}"
       shell: bash
+      if: github.ref == 'refs/heads/master'
     - name: Create Success Badge
       uses: schneegans/dynamic-badges-action@v1.0.0
       with:
@@ -177,7 +178,7 @@ jobs:
         namedLogo: ${{ env.BADGE_LOGO }}
         message: passing
         color: green
-      if: ${{ success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/master'}}
+      if: ${{ success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
     - name: Create Unknown Badge
       uses: schneegans/dynamic-badges-action@v1.0.0
       with:
@@ -188,7 +189,7 @@ jobs:
         message: unknown
         namedLogo: ${{ env.BADGE_LOGO }}
         color: lightgrey
-      if: ${{ cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/master'}}
+      if: ${{ cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
     - name: Create Failure Badge
       uses: schneegans/dynamic-badges-action@v1.0.0
       with:
@@ -199,4 +200,4 @@ jobs:
         message: failed
         namedLogo: ${{ env.BADGE_LOGO }}
         isError: true
-      if: ${{ failure() && github.event_name != 'pull_request' && github.ref == 'refs/heads/master'}}
+      if: ${{ failure() && github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
