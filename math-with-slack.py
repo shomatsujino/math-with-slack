@@ -222,7 +222,7 @@ class AsarArchive:
 
   @staticmethod
   def __roundup(val, divisor):
-    return math.ceil((float(val) / divisor)) * divisor
+    return int(math.ceil((float(val) / divisor)) * divisor)
 
   @classmethod
   def open(cls, filename):
