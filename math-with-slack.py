@@ -185,7 +185,7 @@ class AsarArchive:
       return
 
     destination_path = os.path.join(destination, path)
-    shutil.copyfile(source_path, destination_path, follow_symlinks=True)
+    shutil.copyfile(source_path, destination_path)
 
   def __absolute_offset(self, offset):
     """Converts the specified relative offset into an absolute offset.
