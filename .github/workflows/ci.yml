@@ -147,7 +147,7 @@ jobs:
         $WebClient = New-Object System.Net.WebClient
         $WebClient.DownloadFile("https://download.sysinternals.com/files/Handle.zip", "Handle.zip")
         Expand-Archive -Path Handle.Zip
-        .\slack-download-windows\slack.exe
+        .\slack-download-windows\slack.exe -s
         .\Handle\handle.exe -accepteula 
         while (!(Test-Path "$env:userprofile\Desktop\Slack.lnk")) { Start-Sleep 10 }
         Stop-Process -Name slack -passthru| Wait-Process
