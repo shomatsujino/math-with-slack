@@ -484,22 +484,22 @@ try:
     xx = open(app_path, "wb")
     xx.close()
 except Exception as e:
-    print(e, e.errno)
+    print(e, e.winerror, e.strerror)
 try:
     xx = open(app_path, "rb")
     xx.close()
 except Exception as e:
-    print(e, e.errno)
+    print(e, e.winerror, e.strerror)
 try:
     xx = open(app_path, "wb+")
     xx.close()
 except Exception as e:
-    print(e, e.errno)
+    print(e, e.winerror, e.strerror)
 try:
     xx = open(app_path, "rb+")
     xx.close()
 except Exception as e:
-    print(e, e.errno)
+    print(e, e.winerror, e.strerror)
 import os
 print(os.access(app_path, os.W_OK))
 print(os.access(app_path, os.R_OK))
