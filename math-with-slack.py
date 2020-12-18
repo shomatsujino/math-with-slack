@@ -484,22 +484,25 @@ try:
     xx = open(app_path, "wb")
     xx.close()
 except Exception as e:
-    print(e)
+    print(e, e.errno)
 try:
     xx = open(app_path, "rb")
     xx.close()
 except Exception as e:
-    print(e)
+    print(e, e.errno)
 try:
     xx = open(app_path, "wb+")
     xx.close()
 except Exception as e:
-    print(e)
+    print(e, e.errno)
 try:
     xx = open(app_path, "rb+")
     xx.close()
 except Exception as e:
-    print(e)
+    print(e, e.errno)
+import os
+print(os.access(app_path, os.W_OK))
+print(os.access(app_path, os.R_OK))
 
 with open(app_backup_path, mode='rb') as ori_app_fp, \
      open(app_path, mode='wb') as new_app_fp:
