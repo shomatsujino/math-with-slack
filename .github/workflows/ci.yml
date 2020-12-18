@@ -147,6 +147,7 @@ jobs:
         .\slack-download-windows\slack.exe
         while (!(Test-Path "$env:userprofile\Desktop\Slack.lnk")) { Start-Sleep 10 }
         Stop-Process -Name slack -passthru| Wait-Process
+        handle
       if: matrix.os == 'windows'
     - name: Lint with flake8
       run: |
@@ -160,7 +161,6 @@ jobs:
       if: matrix.os == 'ubuntu' || matrix.os == 'macOS'
     - name: Test run the script (Windows)
       run: |
-        handle
         ls c:\\Users\\runneradmin\\AppData\\Local\\slack\\app-4.12.0\\resources\\app.asar
         python math-with-slack.py
       shell: bash
