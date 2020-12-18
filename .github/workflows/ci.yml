@@ -160,8 +160,9 @@ jobs:
       if: matrix.os == 'ubuntu' || matrix.os == 'macOS'
     - name: Test run the script (Windows)
       run: |
+        # For whatever reason, without th following line python might occasionally throw OSError on accessin app.
+        Write-Host((Get-Item "c:\\Users\\runneradmin\\AppData\\Local\\slack\\app-${{ env.SLACK_VERSION }}\\resources\\app.asar").length/1MB)
         python math-with-slack.py
-      shell: bash
       if: matrix.os == 'windows'
     - name: Prepare Badge Creation
       run: |
