@@ -165,9 +165,7 @@ jobs:
       if: matrix.os == 'ubuntu' || matrix.os == 'macOS'
     - name: Test run the script (Windows)
       run: |
-        ls c:\\Users\\runneradmin\\AppData\\Local\\slack\\app-4.12.0\\resources\\app.asar
         python math-with-slack.py
-      shell: bash
       if: matrix.os == 'windows'
     - name: Prepare Badge Creation
       run: |
