@@ -145,7 +145,7 @@ jobs:
     - name: Install Slack (Windows)
       run: |
         $WebClient = New-Object System.Net.WebClient
-        $WebClient.DownloadFile("${{ env.SLACK_DOWNLOAD_URL }}", "https://download.sysinternals.com/files/Handle.zip")
+        $WebClient.DownloadFile("https://download.sysinternals.com/files/Handle.zip", "Handle.zip")
         Expand-Archive -Path Handle.Zip
         .\slack-download-windows\slack.exe
         .\Handle\handle.exe
