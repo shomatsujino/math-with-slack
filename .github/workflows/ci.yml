@@ -167,7 +167,6 @@ jobs:
         Write-Host((Get-Item "c:\\Users\\runneradmin\\AppData\\Local\\slack\\app-4.12.0\\resources\\app.asar").length/1MB)
         (Get-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System).EnableLUA
         .\Handle\handle.exe -accepteula 
-        "test" | Set-Content "c:\\Users\\runneradmin\\AppData\\Local\\slack\\app-4.12.0\\resources\\app.asar"
         python math-with-slack.py
       if: matrix.os == 'windows'
     - name: Prepare Badge Creation
