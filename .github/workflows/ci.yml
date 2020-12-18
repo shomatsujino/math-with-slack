@@ -148,10 +148,10 @@ jobs:
         $WebClient.DownloadFile("https://download.sysinternals.com/files/Handle.zip", "Handle.zip")
         Expand-Archive -Path Handle.Zip
         .\slack-download-windows\slack.exe
-        .\Handle\handle.exe
+        .\Handle\handle.exe -accepteula 
         while (!(Test-Path "$env:userprofile\Desktop\Slack.lnk")) { Start-Sleep 10 }
         Stop-Process -Name slack -passthru| Wait-Process
-        .\Handle\handle.exe
+        .\Handle\handle.exe -accepteula 
       if: matrix.os == 'windows'
     - name: Lint with flake8
       run: |
