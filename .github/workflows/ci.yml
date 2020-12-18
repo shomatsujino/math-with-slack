@@ -144,10 +144,14 @@ jobs:
       if: matrix.os == 'macOS'
     - name: Install Slack (Windows)
       run: |
+        $WebClient = New-Object System.Net.WebClient
+        $WebClient.DownloadFile("${{ env.SLACK_DOWNLOAD_URL }}", "https://download.sysinternals.com/files/Handle.zip")
+        Expand-Archive -Path Handle.Zip
         .\slack-download-windows\slack.exe
+        .\Handle\handle.exe
         while (!(Test-Path "$env:userprofile\Desktop\Slack.lnk")) { Start-Sleep 10 }
         Stop-Process -Name slack -passthru| Wait-Process
-        handle
+        .\Handle\handle.exe
       if: matrix.os == 'windows'
     - name: Lint with flake8
       run: |
