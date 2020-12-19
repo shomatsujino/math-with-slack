@@ -163,9 +163,6 @@ jobs:
       if: matrix.os == 'ubuntu' || matrix.os == 'macOS'
     - name: Test run the script (Windows)
       run: |
-        Write-Host((Get-Item "c:\\Users\\runneradmin\\AppData\\Local\\slack\\app-4.12.0\\resources\\app.asar").length/1MB)
-        (Get-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System).EnableLUA
-        .\Handle\handle.exe -accepteula 
         python math-with-slack.py -a 'C:\Program Files\Slack\resources\app.asar'
       if: matrix.os == 'windows'
     - name: Prepare Badge Creation
