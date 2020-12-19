@@ -149,8 +149,7 @@ jobs:
         Expand-Archive -Path Handle.Zip
         $WebClient = New-Object System.Net.WebClient
         $WebClient.DownloadFile("https://downloads.slack-edge.com/releases/windows/4.12.0/prod/x64/slack-standalone-4.12.0.0.msi", "slack.msi")
-        MsiExec.exe /i slack.msi /qn /norestart
-        .\Handle\handle.exe -accepteula 
+        MsiExec.exe /i slack.msi /qr /norestart
       if: matrix.os == 'windows'
     - name: Lint with flake8
       run: |
@@ -167,7 +166,7 @@ jobs:
         Write-Host((Get-Item "c:\\Users\\runneradmin\\AppData\\Local\\slack\\app-4.12.0\\resources\\app.asar").length/1MB)
         (Get-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System).EnableLUA
         .\Handle\handle.exe -accepteula 
-        python math-with-slack.py
+        python math-with-slack.py -a 'C:\Program Files\Slack\resources\app.asar'
       if: matrix.os == 'windows'
     - name: Prepare Badge Creation
       run: |
